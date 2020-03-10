@@ -5,77 +5,23 @@ import h5py
 import pygrib
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 from dateutil import parser
 from scipy.interpolate import LinearNDInterpolator as lin_interp
 
-soundvars = ['TMP', 'DWPT', 'HGT', 'RH', 'WDIR', 'WSPD']
+from wxcalc import *
+from dataform import *
+
+soundvars = ['TMP', 'DWPT', 'HGT', 'RH', 'WDIR', 'WSPD', 'PRES']
+soundunits = [r'$C^o$', r'$km$', r'$gpm$', '%', r'deg', r'$kts$', r'$mb$']
 preslist = np.arange(1000, 75, -25)
-#preslist = np.arange(1000, 0, -200)
-degCtoK = 273.15
+#preslist = np.arange(1000, 0, -100)
 
-import sharppy
-import sharppy.sharptab.profile as profile
-import sharppy.sharptab.interp as interp
-import sharppy.sharptab.winds as winds
-import sharppy.sharptab.utils as utils
-import sharppy.sharptab.params as params
-import sharppy.sharptab.thermo as thermo
-
-try:
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO
-    
-def parseSPC(spc_file):
-    ## read in the file
-    data = np.array([l.strip() for l in spc_file.split('\n')])
-
-    ## necessary index points
-    title_idx = np.where( data == '%TITLE%')[0][0]
-    start_idx = np.where( data == '%RAW%' )[0] + 1
-    finish_idx = np.where( data == '%END%')[0]
-
-    ## create the plot title
-    data_header = data[title_idx + 1].split()
-    location = data_header[0]
-    time = data_header[1][:11]
-
-    ## put it all together for StringIO
-    full_data = '\n'.join(data[start_idx[0] : finish_idx[0]][:])
-    sound_data = StringIO( full_data )
-
-    ## read the data into arrays
-    p, h, T, Td, wdir, wspd = np.genfromtxt( sound_data, delimiter=',', comments="%", unpack=True )
-    rh = thermo.relh(p, T, Td)
-    return [T, Td, h, rh, wdir, wspd, p]
-
-def grbname(name, res, dt, fcst, ext):
-    filedt = "%s%s%s_%s" % (dt.year, str(dt.month).zfill(2), 
-                             str(dt.day).zfill(2), str(dt.hour*100).zfill(4) )
-    label = "%s_%s_%s_%s.%s" % (name, str(res), filedt, str(fcst).zfill(3), ext)
-    return label
-
-def calc_dwpt(tempc, rh):
-    parvap_pres = 6.112*rh*np.exp((17.67*tempc)/(243.12+tempc))
-    
-    logterm = np.log(parvap_pres / 611.2)
-    dwpt_num = (17.67 - logterm)*degCtoK + 243.5*logterm
-    dwpt_den = 17.67 - logterm
-    return np.divide(dwpt_num, dwpt_den) - degCtoK
-
-def calc_wspd(u, v):
-    return np.sqrt(u**2 + v**2)
-
-def calc_wdir(u, v):
-    return (np.arctan2(u,v) + np.pi)*(180./np.pi)
-
-def std_grid(gridrange, degres):
+def std_grid(gridrange, gridres):
     lonmin, lonmax = gridrange[0,0], gridrange[0,1]
     latmin, latmax = gridrange[1,0], gridrange[1,1]
-    longrid = np.linspace(lonmin, lonmax, num = 1 + int((lonmax - lonmin)/degres))
-    latgrid = np.linspace(latmin, latmax, num = 1 + int((latmax - latmin)/degres))
+    longrid = np.linspace(lonmin, lonmax, num = 1 + int((lonmax - lonmin)/gridres))
+    latgrid = np.linspace(latmin, latmax, num = 1 + int((latmax - latmin)/gridres))
     
     return longrid, latgrid
 
@@ -88,45 +34,69 @@ def interp_grid(grblon, grblat, grbval, stdlon, stdlat):
     return func(*np.meshgrid(stdlon, stdlat));
 
 class wxblocks(object):
-    def __init__(self, gridrange, degres):
+    def __init__(self, gridrange, gridres):
         """Class to create, modify, and store weather data"""
-        self.gridlon, self.gridlat = std_grid(gridrange, degres)
-        self.res = degres
-        self.lonmin, self.lonmax = min(self.gridlon), max(self.gridlon)
-        self.latmin, self.latmax = min(self.gridlat), max(self.gridlat)
-        self.gridmesh = np.meshgrid(self.gridlon, self.gridlat)
+        self.gridrange = gridrange
+        self.gridres = gridres
         
+        self.gridlon, self.gridlat = std_grid(self.gridrange, self.gridres)
         self.blocks = pd.DataFrame()
+        self.raw = [pd.DataFrame(), datetime(9999,1,1,0)]
 
     def info(self):
         """Prints information about wxpanel"""
+        print("###########################")
+        print("### grid info: ")
+        print("range / res: ")
+        print(self.gridrange, self.gridres )
+        print("###########################\n")
         if self.blocks.shape == (0, 0):
-            print("Empty wxblock!")
-        
+            print("###########################")
+            print("### no time series data ###")
+            print("###########################\n")
         else:
             names = list(self.blocks.columns.names)[:-1]
-            steps = list(self.blocks.columns.get_level_values(0).unique())
-            params = list(self.blocks.columns.get_level_values(1).unique())
+            datetimes = list(self.blocks.columns.get_level_values(0).unique())
+            variables = list(self.blocks.columns.get_level_values(1).unique())
+            print("###########################")
+            print("### block info: ")
+            print("datetimes: ", datetimes )
+            print("variables: ", variables )
+            print("###########################\n")
+        
+        if self.raw[0].shape == (0, 0):
+            print("############################")
+            print("### no raw variable data ###")
+            print("############################\n")
+        
+        else:
+            names = list(self.raw[0].columns.names)[:-1]
+            pressures = list(self.raw[0].columns.get_level_values(0).unique())
+            variables = list(self.raw[0].columns.get_level_values(1).unique())
+            timestamp = str(self.raw[1])
+            print("############################")
+            print("### raw info: ")
+            print("timestamp: ", timestamp)
+            print("pressures: ", pressures )
+            print("params: ", variables )
+            print("############################")
+    
+    def dfstruct(self, level1, level2):
+        levelnames = []
+        if type(level1[0]) == datetime:
+            levelnames = ['datetime', 'variable', 'coordinate']
+        else:
+            levelnames = ['pressure', 'variable', 'coordinate']
             
-            datatype = ''
-            if names[0]=='pres':
-                datatype = 'sounding'
-            elif names[0]=='datetime':
-                datatype = 'time series'
-                
-            print("datatype: ", datatype )
-            print("steps: ", steps )
-            print("params: ", params )
             
-    def grb2time(self, menu, datadir, varlist):
-        dtlist = []
-        for i, istep in menu.iterrows():
-            dtlist.append(istep['datetime'])
-
-        levels = pd.MultiIndex.from_product([dtlist, varlist, list(self.gridlon)],
-                                            names = ['datetime', 'var', 'coord'])
-        self.blocks = pd.DataFrame(index=list(self.gridlat), 
-                                   columns=levels).sort_index(axis=1)
+        levels = pd.MultiIndex.from_product([level1, level2, list(self.gridlon)],
+                                            names = levelnames)
+        return pd.DataFrame(index=list(self.gridlat), 
+                            columns=levels).sort_index(axis=1)
+            
+    
+    def grb2block(self, menu, datadir, varlist):
+        self.blocks = self.dfstruct(list(menu['datetime']), varlist)
         
         for i, istep in menu.iterrows():
             file = grbname(*list(menu.iloc[i][:5]))
@@ -134,185 +104,328 @@ class wxblocks(object):
             dt = istep['datetime']
             
             for j, jvar in enumerate(varlist):
-                short = re.split('(\d+)', jvar)[0]
-                lev = int(re.split('(\d+)', jvar)[1] )
-                griddata =  gribpy.select(shortName=short, level=lev )[0]
-                
-                gridvals = griddata.values
-                griblat, griblon = griddata.latlons()
-                gridded = interp_grid(griblon, griblat, 
-                                      gridvals, 
-                                      self.gridlon, self.gridlat)
+                name, strlevel = re.split('(\d+)', jvar)[:-1]
+                gribitem =  gribpy.select(shortName=short, level=int(strlevel) )[0]
+
+                gridded = interp_grid(gribitem.latlons()[1], gribitem.latlons()[0], 
+                                      gribitem.values, self.gridlon, self.gridlat)
                 self.blocks[dt, jvar] = gridded
-            #print(i, i%2)
             if i%2==0:
                 print("finished ", str(i), ", ", str(len(dtlist)-i), " to go" )
         pass
-            
-    def grb2sound(self, gribpy):
+
+    def grb2raw(self, gribfile, datadir):
         """
         Extracts an interpolated grid of values for the variables in 
         soundvars at the pressures in preslist from the data in gribfile
         """
-        rawlist = ['gh', 't', 'r', 'u', 'v']
-        gridlist = []
-        for i, ivar in enumerate(rawlist):
-            ilevel = []
-            #gridlist.append(gribpy.select(shortName=ivar, level=tuple(preslist) ) )
-            for j, jpres in enumerate(preslist):
-                ilevel.append(gribpy.select(shortName=ivar, level=jpres )[0])
-                
-            gridlist.append(ilevel)
-        levels = pd.MultiIndex.from_product([preslist, soundvars, list(self.gridlon)],
-                                            names = ['pres', 'var', 'coord'])
-        self.blocks = pd.DataFrame(index=list(self.gridlat), 
-                                   columns=levels).sort_index(axis=1)
+        rawlist = ['gh', 't', 'r', 'u', 'v', 'w']
+        self.raw[0] = self.dfstruct(preslist, rawlist)
+        self.raw[1] = parsefile(gribfile)[2]
+        gribpy = pygrib.open(datadir + gribfile )
         
-        griblat, griblon = gridlist[0][0].latlons()
-        for i, ival in enumerate(preslist):
-            for j, jval in enumerate(soundvars):
-                gridvals = np.array([])
+        for j, jpres in enumerate(preslist):
+            for i, ivar in enumerate(rawlist):
+                gribitem = gribpy.select(shortName=ivar, level=jpres )[0]
                 
-                if jval=='HGT':
-                    gridvals = gridlist[0][i].values
-                elif jval=='TMP':
-                    gridvals = gridlist[1][i].values - degCtoK
-                elif jval=='DWPT':
-                    gridvals = calc_dwpt(gridlist[1][i].values - degCtoK,
-                                         gridlist[2][i].values)
-                elif jval=='WDIR':
-                    gridvals = calc_wdir(gridlist[3][i].values,
-                                         gridlist[4][i].values)
-                elif jval=='WSPD':
-                    gridvals = calc_wspd(gridlist[3][i].values,
-                                         gridlist[4][i].values)
-                    gridvals = gridvals*1.94384
-                elif jval=='RH':
-                    gridvals = gridlist[2][i].values
-                    
-                gridded = interp_grid(griblon, griblat, 
-                                      gridvals, 
-                                      self.gridlon, self.gridlat)
-                self.blocks[ival, jval] = gridded
-                #print("variable/pressure: ", jval, "/", ival, "mb")
-            print("pressure: ", ival, " mb")
-        pass
+                gridded = interp_grid(gribitem.latlons()[1], gribitem.latlons()[0], 
+                                      gribitem.values, self.gridlon, self.gridlat)
+                self.raw[0][jpres, ivar] = gridded
+            print("added level: ", jpres, " mb")
+        pass    
     
-    def soundpoint(self, inlon, inlat):
+    def raw2sound(self, inlon, inlat):
         lonpt = self.gridlon[np.abs(self.gridlon-inlon).argmin()]
         latpt = self.gridlat[np.abs(self.gridlat-inlat).argmin()]
         
-        if np.abs(lonpt-inlon)>self.res or np.abs(latpt-inlat)>self.res:
+        if np.abs(lonpt-inlon)>self.gridres or np.abs(latpt-inlat)>self.gridres:
             return print("Error: Point not found on grid")
         else:
             idx = pd.IndexSlice
-            soundpt = self.blocks.loc[latpt, idx[:,:,lonpt]]
+            rawpoint = self.raw[0].loc[latpt, idx[:,:,lonpt]]
+            
+            hgtarr = np.flip(np.array(rawpoint.loc[idx[:,'gh']]), axis=0)###/9.81
+            tmparr = np.flip(np.array(rawpoint.loc[idx[:,'t']]), axis=0)-degCtoK
+            rharr = np.flip(np.array(rawpoint.loc[idx[:,'r']]), axis=0)
+            uarr = np.flip(np.array(rawpoint.loc[idx[:,'u']]), axis=0)*mstokts
+            varr = np.flip(np.array(rawpoint.loc[idx[:,'v']]), axis=0)*mstokts
+            warr = np.flip(np.array(rawpoint.loc[idx[:,'w']]), axis=0)
+            presarr = np.flip(np.array(rawpoint.index.get_level_values(0).unique()), axis=0)
             
             soundlist = []
-            for i, val in enumerate(soundvars):
-                soundlist.append(np.flip(np.array(soundpt.loc[idx[:,val]]), axis=0))
-            
-            soundlist.append(np.flip(np.array(soundpt.index.get_level_values(0).unique()), axis=0))
+            for i, ivar in enumerate(soundvars):
+                if ivar=='HGT':
+                    soundlist.append(hgtarr)
+                elif ivar=='TMP':
+                    soundlist.append(tmparr)
+                elif ivar=='DWPT':
+                    soundlist.append(calc_dwpt(tmparr, rharr) )
+                elif ivar=='WDIR':
+                    soundlist.append(calc_wdir(uarr, varr) )
+                elif ivar=='WSPD':
+                    soundlist.append(calc_wspd(uarr, varr) )
+                elif ivar=='RH':
+                    soundlist.append(rharr )
+                elif ivar=='PRES':
+                    soundlist.append(presarr )
             return soundlist
-    
-    def save_h5(self, h5name):
-        if os.path.exists(h5name):
-            sys.exit('File already exists!')
-    
-        with h5py.File(h5name, 'w') as f:
-            names = list(self.blocks.columns.names)[:-1]
-            steps = list(self.blocks.columns.get_level_values(0).unique())
-            params = list(self.blocks.columns.get_level_values(1).unique())
+        
+    def raw2block(self, *args):
+        sharpargs = [x for x in args if x in features]
+        customargs = [x for x in args if x in customfeats]
+        junk = [x for x in args if x not in features + customfeats]
+        
+        if len(junk)>0:
+            print("Ignoring unknown variables: ", junk)
+                
+        if self.blocks.shape == (0, 0):
+            self.blocks = self.dfstruct([self.raw[1]], [(sharpargs + customargs)[0]] )
             
-            if names[0]=='pres':
-                f.attrs['type'] = 'sounding'
-            elif names[0]=='datetime':
-                f.attrs['type'] = 'time series'
+        if len(sharpargs)>0:
+            sharparr = np.zeros((len(self.raw[0].index), len(sharpargs) ) )
+        
+            for i, ilon in enumerate(self.raw[0].columns.get_level_values(2).unique() ):
+                for j, jlat in enumerate(self.raw[0].index):
+                    sounddict = dict(zip(soundvars, self.raw2sound(ilon, jlat)) )
                 
-            f.create_dataset('longitudes', data = self.blocks.columns.get_level_values(2).unique())
-            f.create_dataset('latitudes', data = self.blocks.index)
-            g = f.create_group('parameters')
+                    prof = sharppyprof(sounddict)
+                    sharpvals = sharpcalc(sharpargs, prof)
+                    sharparr[j, :] = np.array(sharpvals)
+        
+                for j, jvar in enumerate(sharpargs):
+                    self.blocks[self.raw[1], jvar, ilon] = sharparr[:, j]
+                if int(i%2) == 0:
+                    print(ilon, " finished")
                 
-            for i, param in enumerate(params):
-                var = g.create_group(param)
-                    
-                for j, step in enumerate(steps):
-                    var.create_dataset(str(step), data = self.blocks[step, param])
+        if 'UPHEL' in customargs:
+            print("calculating updraft helicity...")
+            
+            levels = list(self.raw[0].columns.levels[0])
+            nlev, nlon, nlat = len(levels), len(self.gridlon), len(self.gridlat)
+            idx = pd.IndexSlice
+            
+            gharr = self.raw[0].loc[:, idx[:,'gh',:]].values.reshape(nlat, nlev, nlon).swapaxes(0,1)
+            uarr = self.raw[0].loc[:, idx[:,'u',:]].values.reshape(nlat, nlev, nlon).swapaxes(0,1)
+            varr = self.raw[0].loc[:, idx[:,'v',:]].values.reshape(nlat, nlev, nlon).swapaxes(0,1)
+            warr = self.raw[0].loc[:, idx[:,'w',:]].values.reshape(nlat, nlev, nlon).swapaxes(0,1)
+            
+            uphelarr = udhelicity(gharr, uarr, varr, warr, self.gridres) 
+            
+            for i, ilon in enumerate(self.raw[0].columns.get_level_values(2).unique() ):
+                self.blocks[self.raw[1], 'UPHEL', ilon] = uphelarr[:, i]
+                
+                if int(i%2) == 0:
+                    print(ilon, " finished")
+            
+        self.blocks = self.blocks.sort_index(axis=1)
+        ###INEFFICIENT!!!
+        pass
     
-    def load_h5(self, h5name, params=[], start='', end=''):
+    def savehdf(self, h5name, datype, varlist = [], overwrite = False):
+        if datype not in ['3D', '2D']:
+            sys.exit('Invalid data type! Must be 3D or 2D')
+
+        names = list(self.blocks.columns.names)[:-1] if datype == '2D' \
+        else list(self.raw[0].columns.names)[:-1]
+
+        dts = list(self.blocks.columns.get_level_values(0).unique()) if datype == '2D' \
+        else [self.raw[1]]
+
+        levels = [] if datype == '2D' \
+        else list(self.raw[0].columns.get_level_values(0).unique()) 
+
+        allvars = list(self.blocks.columns.get_level_values(1).unique()) if datype == '2D' \
+        else list(self.raw[0].columns.get_level_values(1).unique())
+
+        params = [x for x in varlist if x in allvars] if len(varlist) > 0 else allvars
+        junk = [x for x in varlist if x not in allvars]
+
+        if len(junk) > 0:
+            print ("Ignoring unknown variables: ", junk)
+
+        with h5py.File(h5name, 'a') as f:
+
+            if os.path.exists(h5name) and len(list(f.keys() ) ) > 0:
+                print('File exists.. adding to existing file')
+
+                boolrange = (f.attrs['gridrange'] == self.gridrange).all()
+                boolres = f.attrs['gridres'] == self.gridres
+
+                if not boolrange or not boolres:
+                    print(self.gridrange, self.gridres)
+                    print("Should be: ")
+                    print(f.attrs['gridrange'], f.attrs['gridres'])
+                    sys.exit("Inconsistent grid sizes")
+
+            else:
+                f.attrs['gridrange'] = self.gridrange
+                f.attrs['gridres'] = self.gridres
+
+            for i, idt in enumerate(dts):
+                if str(idt) not in f.keys():
+                    g = f.create_group(str(idt))
+                else:
+                    g = f[str(idt)]
+
+                for j, jparam in enumerate(params):
+                    if jparam not in f[str(idt)].keys():
+                        gg = g.create_group(jparam)
+                    else:
+                        gg = g[jparam]
+
+                    if len(levels) == 0:
+                        if jparam in gg.keys():
+                            if overwrite:
+                                gg[jparam][:] = self.blocks[idt, jparam]
+                            else:
+                                print('Will not overwrite data: ', str(idt), jparam)
+                        else:
+                            gg.create_dataset(jparam, data = self.blocks[idt, jparam])
+
+                    else:
+                        if 'levels' not in gg.keys():
+                            ggg = gg.create_group('levels')
+                        else:
+                            ggg = gg['levels']
+
+                        for k, klevel in enumerate(levels):
+                            if str(klevel) in ggg.keys():
+                                if overwrite:
+                                    ggg[str(klevel)][:] = self.raw[0][klevel, jparam]
+                                else:
+                                    print('Will not overwrite data: ', str(idt), str(klevel))
+
+                            else:
+                                ggg.create_dataset(str(klevel), data = \
+                                                   self.raw[0][klevel, jparam])
+                                
+    def loadhdf(self, h5name, datype, varlist = []):
+        if datype not in ['3D', '2D']:
+            sys.exit('Invalid data type! Must be 3D or 2D')
+
         with h5py.File(h5name, 'r') as f:
-        
-            if len(params)==0:
-                params = list(f['parameters'].keys())
+            if len(f.keys()) == 0:
+                sys.exit("Empty file")
 
-            steplist = [f['parameters/' + x].keys() for x in params]
-            steplist = [val for sublist in steplist for val in sublist]
-            steplist = list(dict.fromkeys(steplist))
-        
-            gridlon = f['longitudes'][:]
-            gridlat = f['latitudes'][:]
-        
-            blocktype = ''
-            if f.attrs['type'] == 'sounding':
-                steplist = list(map(int, steplist))
-                blocktype = 'pres'
-            
-            if f.attrs['type'] == 'time series':
-                steplist = [parser.parse(str(x)) for x in steplist]
-                blocktype = 'datetime'
-            
-            if start=='':
-                start=min(steplist)
-            if end=='':
-                end=max(steplist)
-            
-            dflevels = pd.MultiIndex.from_product([steplist, params, gridlon],
-                                                  names = [blocktype, 'var', 'coord'])
-            self.blocks = pd.DataFrame(index=gridlat, columns=dflevels).sort_index(axis=1)
+            boolrange = (f.attrs['gridrange'] == self.gridrange).all()
+            boolres = f.attrs['gridres'] == self.gridres
 
-            for i, param in enumerate(params):
-                for j, step in enumerate(steplist):
-                    data = f['parameters/' + param + '/' + str(step)]
-                    self.blocks[step, param] = data[:]
+            keydts = list(f.keys())
+            keyparams2D = []
+            keyparams3D = []
+            keylevels3D = []
+
+            for i, idt in enumerate(keydts ):
+                g = f[idt]
+                params2D = []
+                params3D = []
+
+                for j, jparam in enumerate(list(g.keys() ) ):
+                    gg = g[jparam]
+                    if jparam in gg.keys():
+                        params2D.append(jparam)
+                    if 'levels' in list(gg.keys()):
+                        ggg = gg['levels']
+                        params3D.append(jparam)
+
+                        if len(keylevels3D) == 0:
+                            keylevels3D = list(ggg.keys())
+                        else:
+                            if len(ggg.keys()) != len(keylevels3D):
+                                print("Warning: Different variables contain different \
+                                number of levels")
+
+                keyparams2D.append(params2D)
+                keyparams3D.append(params3D)
+
+                print("Contents for datetime: ", idt)
+                print("2D parameters: ", params2D)
+                print("3D parameters: ", params3D)
+
+            if not boolrange or not boolres:
+                if self.blocks.shape == (0, 0):
+                    print("Safe to adjust grid size (empty block):")
+                    print(f.attrs['gridrange'], f.attrs['gridres'])
+
+                    self.gridrange = f.attrs['gridrange']
+                    self.gridres = f.attrs['gridres']
+                    self.gridlon, self.gridlat = std_grid(self.gridrange, 
+                                                                    self.gridres)
+                else:
+                    print("Incompatible grid dimensions:")
+                    print(f.attrs['gridrange'], f.attrs['gridres'])
+                    print("Grid range / res must be:")
+                    print(self.gridrange, self.gridres)
+                    sys.exit()
+
+            if datype == '3D':
+                if len(keydts) > 0:
+                    print("Multiple datetimes: ", keydts)
+                    print("Loading datetime: ", keydts[0])   
+                params = keyparams3D[0]
+                levels = [int(x) for x in keylevels3D]
+                g = f[keydts[0]]
+
+                self.raw[0] = self.dfstruct(levels, params)
+                self.raw[1] = parser.parse(keydts[0])
+
+                for j, jparam in enumerate(params):
+                    gg = g[jparam]
+
+                    for k, klevel in enumerate(levels):
+                        data = gg['levels/' + str(klevel)]
+                        self.raw[0][klevel, jparam] = data[:]
+
+            if datype == '2D':
+                params = keyparams2D[0] 
+
+                if len(varlist) > 0:
+                    params = [x for x in keyparams2D[0] if x in varlist]
+                    junk = [x for x in keyparams2D[0] if x not in varlist]
+                    if len(junk) > 0:
+                        print("Ignoring unknown variables:", junk)
+
+                dts = [parser.parse(x) for x in keydts]
+
+                print(list(self.blocks.columns.get_level_values(0).unique() ) )
+                
+                
+
+                for i, idt in enumerate(dts):
+                    print("Loading parameters: ", params, idt)
+                    for j, jparam in enumerate(params):
+                        data = f[str(idt) + '/' + jparam + '/' + jparam]
+                        
+                        if self.blocks.shape == (0,0):
+                            self.blocks = self.dfstruct(dts, params)
+                            self.blocks[idt, jparam] = data[:]
+                        else:
+                            lons = self.blocks.columns.get_level_values(2).unique()
+                            
+                            for k, klon in enumerate(lons):
+                                self.blocks[idt, jparam, klon] = data[:, k]
     
-    def plot2fig(self, step, var, fig, ax):
-        plotmesh = ax.pcolormesh(self.gridmesh[0], self.gridmesh[1], self.blocks[step, var])
+    def plot2fig(self, step, var, fig, ax, coord = [], title = ''):
+        rawlist = ['gh', 't', 'r', 'u', 'v', 'w']
+        gridmesh = np.meshgrid(self.gridlon, self.gridlat)
+        
+        plotmesh = ax.pcolormesh(gridmesh[0], gridmesh[1], self.raw[0][step, var]) if var in rawlist \
+        else ax.pcolormesh(gridmesh[0], gridmesh[1], self.blocks[step, var])
+        
         plotbar = fig.colorbar(plotmesh, ax = ax)
+
+        if len(coord)>0:
+            for ilabel, jll in coord:
+                ax.plot([jll[0]], [jll[1]], marker='o', markersize=6, color="red")
+                ax.text(jll[0] + 0.3, jll[1] + 0.3, ilabel, fontsize=10, color="white")
+                
+        pad = 5 # in points
+        
+        if len(title) > 0:
+            ax.annotate(title, xy=(0.5, 0.), xytext=(0, pad),
+                xycoords=ax.title, textcoords='offset points',
+                size='large', ha='center', va='baseline');
+        
         return plotmesh, plotbar
     
-from matplotlib.widgets import Slider  # import the Slider widget
-from ipywidgets import *
 
-class animate_wxblocks(object):
-    def __init__(self, wxblocks, var):
-        istep = 0
-        #title = (idatetime + timedelta(hours = istep)).strftime('%Y%m%d-%H')
-        #self.wxblocks = wxblocks
-        self.var = var 
-        self.steps = np.array(wxblocks.columns.get_level_values(level=0).unique())
-        self.data = np.array([wxblocks[x, self.var].values for x in self.steps])
-        
-        self.lon = np.array(wxblocks.columns.get_level_values(level=2).unique())
-        self.lat = np.array(wxblocks.index.get_level_values(level=0).unique())
-
-        self.fig, self.ax = plt.subplots(figsize = (10,8) )
-        title = self.steps[istep]
-        self.ax.set_title(title)
-
-        self.sliderax = self.fig.add_axes([0.1, 0.02, 0.65, 0.04])
-        self.slider = Slider(self.sliderax, 'Slice', 0, len(self.steps)-1, valinit=istep, valstep=1)
-        self.slider.on_changed(self.update)
-
-        self.im = self.ax.pcolormesh(self.lon, self.lat, self.data[istep], 
-                                     vmin=self.data.min(), vmax=self.data.max())
-        self.fig.colorbar(self.im, ax = self.ax)
-        
-    def update(self, i):
-        newtitle = self.steps[int(i)]
-        self.ax.set_title(newtitle)
-
-        self.im.set_array(self.data[int(i),:-1,:-1].ravel())
-        self.fig.canvas.draw()
-
-    def show(self):
-        plt.show()

@@ -47,25 +47,15 @@ def grbname(name, res, dt, fcst, ext):
     label = "%s_%s_%s_%s.%s" % (name, str(res), filedt, str(fcst).zfill(3), ext)
     return label
 
-def grbconvert(datadir, files = 'all'):
-    filetags = []
-    fileexts = []
+def grbconvert(folder, file):
+    filetype = parsefile(file)[-1]
     
-    if files=='all':
-        filetags, fileexts = listdir(datadir, 'grb')
-    elif isinstance(files,list):
-        filetags = files
-        fileexts = ['grb']*len(files)
-        
-    for i, val in enumerate(filetags):
-        filename = "%s.%s" % (filetags[i], fileexts[i])
-        
-        if os.path.exists(datadir + '/' + filename + '.grb2'):
-            print(val + " seems converted already... converting again")
-            
-        converter_cmd = "%s %s/%s" % (grb1to2, datadir, filename)
+    if filetype == 'grb':
+        converter_cmd = "%s %s/%s" % (grb1to2, folder, file)
         subprocess.call(converter_cmd, shell=True)
-        print("Converted file: " + val)
+        print("Converted file: " + file)
+    else:
+        print("Invalid file type: ", file)
 
 class gribmenu():
     def __init__(self):
@@ -80,16 +70,20 @@ class gribmenu():
         if not checkurl(modelurl):
             print('Invalid model? No website for: ' + modelurl) 
         
-        idt, fdt = datetime.date(dtrange[0]), datetime.date(dtrange[1])  
-        dtlist = [idt + timedelta(days=x) \
-                  for x in range(0, (fdt-idt+timedelta(days=1)).days)]
-
+        if 'start' in dtrange.index:
+            idt, fdt = dtrange['start'], dtrange['end']
+        elif 'datetime' in dtrange.index:
+            idt = dtrange['datetime']
+            fdt = idt
+            
+        datelist = [datetime.date(idt) + timedelta(days=x) \
+                  for x in range(0, (datetime.date(fdt)-datetime.date(idt)+timedelta(days=1)).days)]
        
-        for dt in dtlist:
-            strdt = dt.strftime('%Y%m%d')
+        for date in datelist:
+            strdt = date.strftime('%Y%m%d')
 
             remd5 = ''
-            if dt < datetime.date(datetime(2006, 1, 1) ):
+            if model == 'gfsanl' and date < datetime.date(datetime(2006, 1, 1) ):
                 remd5 = '.*\/(.*)\n'
             else:
                 remd5 = '\s(.*)\n'
@@ -111,15 +105,7 @@ class gribmenu():
                     menuitem = parsefile(val)
                     menuitem.append(str(urlfile))
                     self.menu.loc[len(self.menu)] = menuitem
-    
-    def dirmenu(self, datdir, ext):
-        filelist = glob.glob(datdir+'/*.'+ext)
-        filelist = [re.split('\\/', x)[::-1][0] for x in filelist]
-
-        for i, val in enumerate(filelist):
-            menuitem = parsefile(val)
-            menuitem.append('N/A')
-            self.menu.loc[len(self.menu)] = menuitem
+        self.filtermenu(start = idt, end = fdt)
 
     def filtermenu(self, **kwargs):
         if 'name' in kwargs:
@@ -149,13 +135,15 @@ class gribmenu():
             selectdf = selectdf[(selectdf['datetime'] == kwargs.get('datetime'))]
         if 'ext' in kwargs:
             selectdf = selectdf[(selectdf['ext'] == kwargs.get('ext'))]
+        if 'index' in kwargs:
+            selectdf = selectdf[(selectdf.index == kwargs.get('index'))]
             
         selectdf = selectdf.reset_index(drop=True)
         if len(selectdf)==1:
             return grbname(*list(selectdf.loc[0][:5]))
 
         else:
-            print("Number of matching files: ", len(selectdf))
+            print("More than one matching file: ", len(selectdf))
             
     def checkonline(self):
         intcheck = 0
@@ -185,10 +173,10 @@ class gribmenu():
         pass
     
     def loadmenu(self, csvfile):
-        self.menu = pd.read_csv(csvfile, index_col=False)
+        self.menu = pd.read_csv(csvfile, index_col=0)
         self.menu['datetime'] = pd.to_datetime(self.menu['datetime'])
         self.menu['fchr'] = self.menu['fchr'].astype(int)
     
     def savemenu(self, menuname):
-        self.menu.to_csv(menuname, index=False)
+        self.menu.to_csv(menuname, index=True)
         

@@ -1,0 +1,8 @@
+,name,res,datetime,fchr,ext,url
+05032220i_t.ays,ruc2,252,2005-03-22 20:00:00,0,grb.grb2,https://nomads.ncdc.noaa.gov/data/rucanl/200503/20050322/ruc2_252_20050322_2000_000.grb
+05032220m_t.aby,ruc2,252,2005-03-22 20:00:00,0,grb.grb2,https://nomads.ncdc.noaa.gov/data/rucanl/200503/20050322/ruc2_252_20050322_2000_000.grb
+07050423.LMN,ruc2anl,130,2007-05-04 23:00:00,0,grb2,https://nomads.ncdc.noaa.gov/data/rucanl/200705/20070504/ruc2anl_130_20070504_2300_000.grb2
+08020600.LZK,ruc2,252,2008-02-06 00:00:00,0,grb.grb2,https://nomads.ncdc.noaa.gov/data/rucanl/200802/20080206/ruc2_252_20080206_0000_000.grb
+08061200.TOP,ruc2,252,2008-06-12 00:00:00,0,grb.grb2,https://nomads.ncdc.noaa.gov/data/rucanl/200806/20080612/ruc2_252_20080612_0000_000.grb
+09021100.FWD,ruc2anl,130,2009-02-11 00:00:00,0,grb2,https://nomads.ncdc.noaa.gov/data/rucanl/200902/20090211/ruc2anl_130_20090211_0000_000.grb2
+14061619.OAX,rap,130,2014-06-19 19:00:00,0,grb2,https://nomads.ncdc.noaa.gov/data/rucanl/201406/20140619/rap_130_20140619_1900_000.grb2
